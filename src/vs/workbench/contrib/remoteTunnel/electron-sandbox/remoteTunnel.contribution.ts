@@ -23,9 +23,12 @@ import { join } from 'vs/base/common/path';
 import { IExtensionService } from 'vs/workbench/services/extensions/common/extensions';
 import { IStringDictionary } from 'vs/base/common/collections';
 import { IQuickInputService, IQuickPickItem, IQuickPickSeparator } from 'vs/platform/quickinput/common/quickInput';
-import { registerLogChannel } from 'vs/workbench/services/output/common/output';
+import { IOutputService, registerLogChannel } from 'vs/workbench/services/output/common/output';
 import { IFileService } from 'vs/platform/files/common/files';
 import { IConfigurationRegistry, Extensions as ConfigurationExtensions } from 'vs/platform/configuration/common/configurationRegistry';
+import { IProgress, IProgressService, IProgressStep, Progress, ProgressLocation } from 'vs/platform/progress/common/progress';
+import { ServicesAccessor } from 'vs/platform/instantiation/common/instantiation';
+import { INotificationService, Severity } from 'vs/platform/notification/common/notification';
 
 export const REMOTE_TUNNEL_CATEGORY: ILocalizedString = {
 	original: 'Remote Tunnel',
@@ -104,11 +107,12 @@ export class RemoteTunnelWorkbenchContribution extends Disposable implements IWo
 
 		this.registerTurnOnAction();
 		this.registerTurnOffAction();
+		this.registerShowLogAction();
 
 		this.signedInContext.set(this.existingSessionId !== undefined);
 
 		if (this.existingSessionId) {
-			this.initialize(true);
+			this.initialize(true, Progress.None);
 		}
 
 	}
@@ -126,11 +130,12 @@ export class RemoteTunnelWorkbenchContribution extends Disposable implements IWo
 		}
 	}
 
-	public async initialize(silent: boolean = false) {
+	public async initialize(silent: boolean = false, progress: IProgress<IProgressStep>) {
 		if (this.initialized) {
 			return true;
 		}
-		this.initialized = await this.doInitialize(silent);
+		this.initialized = await this.doInitialize(silent, progress);
+
 		this.signedInContext.set(this.initialized);
 		return this.initialized;
 	}
@@ -141,7 +146,7 @@ export class RemoteTunnelWorkbenchContribution extends Disposable implements IWo
 	 * meaning that authentication is configured and it
 	 * can be used to communicate with the remote storage service
 	 */
-	private async doInitialize(silent: boolean): Promise<boolean> {
+	private async doInitialize(silent: boolean, progress: IProgress<IProgressStep>): Promise<boolean> {
 		// Wait for authentication extensions to be registered
 		await this.extensionService.whenInstalledExtensionsRegistered();
 
@@ -150,10 +155,12 @@ export class RemoteTunnelWorkbenchContribution extends Disposable implements IWo
 			return true;
 		}
 
+		progress.report({ message: localize('progress.authenticating', "Authenticating"), total: 4, increment: 1 });
 		const authenticationSession = await this.getAuthenticationSession(silent);
 		if (authenticationSession !== undefined) {
 			this.#authenticationInfo = authenticationSession;
-			this.remoteTunnelService.updateAccount({ token: authenticationSession.token, authenticationProviderId: authenticationSession.providerId });
+			progress.report({ message: localize('progress.start', "Starting server"), total: 4, increment: 1 });
+			await this.remoteTunnelService.updateAccount({ token: authenticationSession.token, authenticationProviderId: authenticationSession.providerId });
 		}
 
 		return authenticationSession !== undefined;
@@ -319,7 +326,7 @@ export class RemoteTunnelWorkbenchContribution extends Disposable implements IWo
 
 	private registerTurnOnAction() {
 		const that = this;
-		this._register(registerAction2(class ShareMachineAction extends Action2 {
+		this._register(registerAction2(class extends Action2 {
 			constructor() {
 				super({
 					id: 'workbench.remoteTunnel.actions.turnOn',
@@ -337,15 +344,28 @@ export class RemoteTunnelWorkbenchContribution extends Disposable implements IWo
 				});
 			}
 
-			async run() {
-				return await that.initialize(false);
+			async run(accessor: ServicesAccessor) {
+				const progressService = accessor.get(IProgressService);
+				const notificationService = accessor.get(INotificationService);
+				await progressService.withProgress(
+					{
+						location: ProgressLocation.Notification,
+						title: localize('progress.title', "[Turning on remote tunnel](command:workbench.remoteTunnel.showLog)",),
+					},
+					progress => that.initialize(false, progress)
+				);
+				await notificationService.notify({
+					severity: Severity.Info,
+					message: localize('progress.turnOn.final', "Remote tunnel is set up")
+				});
 			}
+
 		}));
 	}
 
 	private registerTurnOffAction() {
 		const that = this;
-		this._register(registerAction2(class ResetShareMachineAuthenticationAction extends Action2 {
+		this._register(registerAction2(class extends Action2 {
 			constructor() {
 				super({
 					id: 'workbench.remoteTunnel.actions.turnOff',
@@ -373,6 +393,27 @@ export class RemoteTunnelWorkbenchContribution extends Disposable implements IWo
 					that.clearAuthenticationPreference();
 					that.remoteTunnelService.updateAccount(undefined);
 				}
+			}
+		}));
+	}
+
+	private registerShowLogAction() {
+		this._register(registerAction2(class extends Action2 {
+			constructor() {
+				super({
+					id: 'workbench.remoteTunnel.showLog',
+					title: localize('remoteTunnel.showLog', 'Show Remote Tunnel Log...'),
+					category: REMOTE_TUNNEL_CATEGORY,
+					precondition: ContextKeyExpr.equals(REMOTE_TUNNEL_SIGNED_IN_KEY, true),
+					menu: [{
+						id: MenuId.CommandPalette,
+					}]
+				});
+			}
+
+			async run(accessor: ServicesAccessor) {
+				const outputService = accessor.get(IOutputService);
+				outputService.showChannel('remoteTunnel');
 			}
 		}));
 	}

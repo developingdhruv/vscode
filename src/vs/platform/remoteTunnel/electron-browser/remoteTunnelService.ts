@@ -98,7 +98,7 @@ export class RemoteTunnelService extends Disposable implements IRemoteTunnelServ
 			this.telemetryService.publicLog2<RemoteTunnelEnablementEvent, RemoteTunnelEnablementClassification>('remoteTunnel.enablement', { enabled: !!account });
 
 			try {
-				this._startTunnelProcessDelayer.trigger(() => this.updateTunnelProcess());
+				await this._startTunnelProcessDelayer.trigger(() => this.updateTunnelProcess());
 			} catch (e) {
 				this._logger.error(e);
 			}
